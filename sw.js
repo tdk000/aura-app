@@ -1,5 +1,5 @@
 /* Aura PWA: кэш оболочки; потоки и статус Icecast всегда мимо кэша. */
-var CACHE = "aura-app-v2";
+var CACHE = "aura-app-v3";
 var ASSETS = ["./", "./index.html", "./manifest.webmanifest",
               "./icons/icon-192.png", "./icons/icon-512.png",
               "./icons/maskable-512.png", "./icons/apple-touch-icon.png"];

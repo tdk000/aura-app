@@ -35,6 +35,7 @@
   .btn:active{transform:scale(.96)}
   .btn.on{background:rgba(46,196,182,.22);border-color:rgba(46,196,182,.55);color:#bdf3ee}
   .btn.big{width:52px;height:52px;border-radius:50%;font-size:19px}
+  .btn:disabled{opacity:.35;cursor:default}
   select{background:rgba(8,14,16,.8);color:var(--tx);border:1px solid var(--line);
     border-radius:11px;padding:9px 10px;font-size:13.5px;max-width:180px}
   .sl{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--mut)}
@@ -57,7 +58,9 @@
   <div class="track" id="track"></div>
   <div class="dock">
     <div class="row">
+      <button class="btn" id="prev" aria-label="Предыдущий трек" title="Предыдущий трек" disabled>⏮</button>
       <button class="btn big" id="play" aria-label="Играть">⏸</button>
+      <button class="btn" id="next" aria-label="Следующий трек" title="Следующий трек" disabled>⏭</button>
       <button class="btn" data-mode="bars">Столбцы</button>
       <button class="btn" data-mode="circle">Круг</button>
       <button class="btn" data-mode="wave">Волна</button>
@@ -225,6 +228,12 @@ var engine = {
     this.mediaEl.src = this.objectUrl;
     this.mediaNode.connect(this.sourceGain);
     this.mediaEl.play().catch(function () {});
+  },
+  skip: function (dir) {
+    if (!this.playlist || !this.playlist.length || !this.mediaEl) return;
+    this.plIndex = (this.plIndex + dir + this.playlist.length) % this.playlist.length;
+    this._playPl();
+    if (this.onPlChange) this.onPlChange(this.playlist[this.plIndex], this.plIndex, this.playlist.length);
   },
   startRadio: function (station, qualityIdx, onMeta) {
     this.ensure(); this.clearInput(); this.ensureMedia();
@@ -609,7 +618,8 @@ var state = {
 /* ---------- приложение ---------- */
 var canvas = document.getElementById("stage"), c2d = canvas.getContext("2d"),
     hud = document.getElementById("hud"), trackEl = document.getElementById("track"),
-    playBtn = document.getElementById("play"), pinBtn = document.getElementById("pin"),
+    playBtn = document.getElementById("play"), prevBtn = document.getElementById("prev"),
+    nextBtn = document.getElementById("next"), pinBtn = document.getElementById("pin"),
     fsBtn = document.getElementById("fs"), themeSel = document.getElementById("theme"),
     stationSel = document.getElementById("station"), sensEl = document.getElementById("sens"),
     volEl = document.getElementById("vol"), gate = document.getElementById("gate");
@@ -637,6 +647,12 @@ function setTrack(head, sub) {
     trackEl.firstChild.textContent = head;
     trackEl.lastChild.textContent = sub || "";
   }
+  syncNav();
+}
+function syncNav() {
+  var on = !!(engine.playlist && engine.playlist.length > 1);
+  prevBtn.disabled = !on;
+  nextBtn.disabled = !on;
 }
 function syncSourceBtns() {
   document.querySelectorAll("[data-src]").forEach(function (b) {
@@ -717,6 +733,13 @@ volEl.addEventListener("input", function () { engine.setVolume(volEl.value / 100
 playBtn.addEventListener("click", function () {
   if (paused) { engine.resumeAll(); } else { engine.pauseAll(); }
   syncPlay();
+});
+prevBtn.addEventListener("click", function () { engine.skip(-1); });
+nextBtn.addEventListener("click", function () { engine.skip(1); });
+window.addEventListener("keydown", function (e) {
+  if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if (e.key === "ArrowRight") nextBtn.click();
+  else if (e.key === "ArrowLeft") prevBtn.click();
 });
 pinBtn.addEventListener("click", function () {
   pinned = !pinned; pinBtn.classList.toggle("on", pinned);
