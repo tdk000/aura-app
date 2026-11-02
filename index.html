@@ -70,6 +70,8 @@
       <button class="btn" data-src="mic">Микрофон</button>
       <button class="btn" id="fileBtn">Трек</button>
       <input type="file" id="fileIn" accept="audio/*" hidden>
+      <button class="btn" data-src="folder" id="folderBtn">Папка</button>
+      <input type="file" id="folderIn" webkitdirectory multiple hidden>
       <button class="btn" data-src="radio">Радио</button>
       <select id="station" aria-label="Станция" hidden></select>
       <select id="theme" aria-label="Тема"></select>
@@ -81,7 +83,7 @@
 
 <div class="gate" id="gate">
   <h1>A U R A</h1>
-  <p>Визуализатор звука: демо-трек, ваш файл, микрофон или радио Cassiopeia.<br>
+  <p>Визуализатор звука: демо-трек, ваши файлы и папки, микрофон или радио Cassiopeia.<br>
      Четыре режима, пять тем, полный экран.</p>
   <button class="go" id="go">Начать</button>
 </div>
@@ -125,7 +127,7 @@ function logIndex(i, count, bins) {
 var engine = {
   ctx: null, analyser: null, master: null, monitor: null, sourceGain: null,
   freq: null, time: null, mediaEl: null, mediaNode: null, micStream: null, micNode: null,
-  demo: null, objectUrl: null, metaTimer: null,
+  demo: null, objectUrl: null, metaTimer: null, playlist: null, plIndex: 0, onPlChange: null,
   ensure: function () {
     if (!this.ctx) {
       var Ctx = window.AudioContext || window.webkitAudioContext;
@@ -158,6 +160,7 @@ var engine = {
   },
   clearInput: function () {
     clearInterval(this.metaTimer); this.metaTimer = null;
+    this.playlist = null;
     if (this.demo) { this.demo.stop(); this.demo = null; }
     if (this.micNode) { this.micNode.disconnect(); this.micNode = null; }
     if (this.micStream) { this.micStream.getTracks().forEach(function (t) { t.stop(); }); this.micStream = null; }
@@ -183,10 +186,18 @@ var engine = {
   },
   ensureMedia: function () {
     if (!this.mediaEl) {
+      var self = this;
       this.mediaEl = new Audio();
       this.mediaEl.crossOrigin = "anonymous";
       this.mediaEl.loop = false;
       this.mediaEl.preload = "auto";
+      this.mediaEl.addEventListener("ended", function () {
+        if (self.playlist && self.playlist.length) {
+          self.plIndex = (self.plIndex + 1) % self.playlist.length;
+          self._playPl();
+          if (self.onPlChange) self.onPlChange(self.playlist[self.plIndex], self.plIndex, self.playlist.length);
+        }
+      });
       this.mediaNode = this.ctx.createMediaElementSource(this.mediaEl);
     }
   },
@@ -196,6 +207,21 @@ var engine = {
     if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
     this.objectUrl = URL.createObjectURL(file);
     this.mediaEl.loop = true;
+    this.mediaEl.src = this.objectUrl;
+    this.mediaNode.connect(this.sourceGain);
+    this.mediaEl.play().catch(function () {});
+  },
+  loadFolder: function (files) {
+    this.ensure(); this.clearInput(); this.ensureMedia();
+    this.monitor.gain.setTargetAtTime(1, this.ctx.currentTime, 0.02);
+    this.playlist = files; this.plIndex = 0;
+    this._playPl();
+  },
+  _playPl: function () {
+    var f = this.playlist[this.plIndex];
+    if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
+    this.objectUrl = URL.createObjectURL(f);
+    this.mediaEl.loop = false;
     this.mediaEl.src = this.objectUrl;
     this.mediaNode.connect(this.sourceGain);
     this.mediaEl.play().catch(function () {});
@@ -271,62 +297,65 @@ var engine = {
   }
 };
 
-/* ---------- демо-синтезатор (порт demo-synth.ts) ---------- */
-var DEMO_BASS = [55.0, 55.0, 65.41, 55.0, 73.42, 73.42, 65.41, 82.41];
-var DEMO_LEAD = [220.0, 261.63, 329.63, 392.0, 329.63, 261.63, 246.94, 220.0];
+/* ---------- демо-синтезатор: спокойная пьеса (Am-add9, колокольчики) ---------- */
+var DEMO_PAD = [110, 164.81, 220, 246.94, 329.63];   // Am(add9)
+var DEMO_MEL = [  // 32 шага, ля-минорная пентатоника; 0 — пауза
+  659.26, 0, 0, 523.25, 0, 0, 440, 0,
+  0, 0, 523.25, 0, 587.33, 0, 0, 0,
+  659.26, 0, 0, 783.99, 0, 0, 659.26, 0,
+  587.33, 0, 523.25, 0, 440, 0, 0, 0
+];
 function makeDemoSynth(ctx, out) {
-  var running = false, timer = null, next = 0, step = 0, padNodes = [], bpm = 108;
+  var running = false, timer = null, next = 0, step = 0, padNodes = [], bpm = 72;
   var noise = (function () {
     var len = Math.floor(ctx.sampleRate), buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
     for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
     return buf;
   })();
-  function env(g, t, peak, dur) {
+  var delay = ctx.createDelay(1.2); delay.delayTime.value = 0.5;
+  var fb = ctx.createGain(); fb.gain.value = 0.34; delay.connect(fb); fb.connect(delay);
+  var wet = ctx.createGain(); wet.gain.value = 0.22; delay.connect(wet); wet.connect(out);
+  function env(g, t, peak, attack, dur) {
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(peak, t + 0.004);
+    g.gain.exponentialRampToValueAtTime(peak, t + attack);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
   }
-  function kick(t) {
+  function heartbeat(t) {   // мягкий низкий пульс вместо бочки
     var o = ctx.createOscillator(), g = ctx.createGain();
-    o.frequency.setValueAtTime(168, t);
-    o.frequency.exponentialRampToValueAtTime(36, t + 0.14);
-    env(g, t, 0.95, 0.32);
-    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.34);
+    o.frequency.setValueAtTime(82, t);
+    o.frequency.exponentialRampToValueAtTime(44, t + 0.28);
+    env(g, t, 0.42, 0.015, 0.5);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.52);
   }
-  function snare(t) {
-    var s = ctx.createBufferSource(); s.buffer = noise;
-    var bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 1800; bp.Q.value = 0.9;
-    var g = ctx.createGain(); env(g, t, 0.28, 0.16);
-    s.connect(bp); bp.connect(g); g.connect(out); s.start(t); s.stop(t + 0.18);
-  }
-  function hat(t, open) {
-    var s = ctx.createBufferSource(); s.buffer = noise;
-    var hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = open ? 6000 : 8000;
-    var g = ctx.createGain(); env(g, t, open ? 0.16 : 0.1, open ? 0.11 : 0.035);
-    s.connect(hp); hp.connect(g); g.connect(out); s.start(t); s.stop(t + (open ? 0.13 : 0.06));
-  }
-  function bass(t, freq) {
-    var o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-    o.type = "sawtooth"; o.frequency.value = freq;
-    f.type = "lowpass"; f.frequency.setValueAtTime(420, t);
-    f.frequency.exponentialRampToValueAtTime(180, t + 0.22);
-    env(g, t, 0.22, 0.28);
-    o.connect(f); f.connect(g); g.connect(out); o.start(t); o.stop(t + 0.3);
-  }
-  function lead(t, freq) {
+  function warmBass(t) {
     var o = ctx.createOscillator(), g = ctx.createGain();
-    o.type = "triangle"; o.frequency.value = freq;
-    env(g, t, 0.12, 0.22);
-    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.24);
+    o.type = "sine"; o.frequency.value = 55;
+    env(g, t, 0.16, 0.05, 2.2);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 2.3);
+  }
+  function shaker(t) {
+    var s = ctx.createBufferSource(); s.buffer = noise;
+    var hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 6500;
+    var g = ctx.createGain(); env(g, t, 0.045, 0.002, 0.06);
+    s.connect(hp); hp.connect(g); g.connect(out); s.start(t); s.stop(t + 0.08);
+  }
+  function bell(t, freq) {
+    var g = ctx.createGain(); env(g, t, 0.13, 0.008, 1.5);
+    [[1, 1], [2, 0.28], [2.997, 0.1]].forEach(function (p) {
+      var o = ctx.createOscillator(); o.frequency.value = freq * p[0];
+      var og = ctx.createGain(); og.gain.value = p[1];
+      o.connect(og); og.connect(g); o.start(t); o.stop(t + 1.55);
+    });
+    g.connect(out); g.connect(delay);
   }
   function startPad() {
     var t = ctx.currentTime;
-    [[110, "sine", 0.07], [164.81, "sine", 0.045], [220.5, "triangle", 0.03]].forEach(function (p) {
+    DEMO_PAD.forEach(function (freq, idx) {
       var o = ctx.createOscillator(), g = ctx.createGain(), lfo = ctx.createOscillator(), lg = ctx.createGain();
-      o.type = p[1]; o.frequency.value = p[0];
-      lfo.frequency.value = 0.08; lg.gain.value = p[2] * 0.25;
+      o.type = idx % 2 ? "sine" : "triangle"; o.frequency.value = freq;
+      lfo.frequency.value = 0.06 + idx * 0.017; lg.gain.value = 0.008;
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(p[2], t + 1.6);
+      g.gain.exponentialRampToValueAtTime(0.03, t + 3);
       lfo.connect(lg); lg.connect(g.gain); o.connect(g); g.connect(out);
       o.start(t); lfo.start(t); padNodes.push(o, lfo);
     });
@@ -336,13 +365,12 @@ function makeDemoSynth(ctx, out) {
     var stepDur = 60 / bpm / 4, horizon = ctx.currentTime + 0.14;
     while (next < horizon) {
       (function (st, t) {
-        if (st % 4 === 0) kick(t);
-        if (st === 4 || st === 12) snare(t);
-        if (st % 2 === 0) hat(t, st % 4 === 2);
-        if (st % 2 === 0) bass(t, DEMO_BASS[(st / 2) % DEMO_BASS.length]);
-        if (st % 4 === 2) lead(t, DEMO_LEAD[(st / 2) % DEMO_LEAD.length]);
+        if (st % 16 === 0) { heartbeat(t); warmBass(t); }
+        if (st % 4 === 2) shaker(t);
+        var f = DEMO_MEL[st % DEMO_MEL.length];
+        if (f) bell(t, f);
       })(step, next);
-      step = (step + 1) % 16;
+      step = (step + 1) % 32;
       next += stepDur;
     }
     timer = setTimeout(loop, 20);
@@ -359,6 +387,7 @@ function makeDemoSynth(ctx, out) {
       clearTimeout(timer);
       padNodes.forEach(function (n) { try { n.stop(); } catch (e) {} });
       padNodes = [];
+      try { wet.disconnect(); fb.disconnect(); delay.disconnect(); } catch (e) {}
     }
   };
 }
@@ -588,6 +617,7 @@ var canvas = document.getElementById("stage"), c2d = canvas.getContext("2d"),
 var started = false, source = "demo", paused = false, pinned = false,
     mode = ls("mode", "bars"), themeId = ls("theme", "tide"),
     sensitivity = parseFloat(ls("sens", "1.2")), curStation = STATIONS[0];
+var AUDIO_EXT = /\.(mp3|m4a|aac|wav|ogg|oga|opus|flac|weba|webm)$/i;
 
 THEMES.forEach(function (t) {
   var o = document.createElement("option"); o.value = t.id; o.textContent = t.name; themeSel.appendChild(o);
@@ -626,12 +656,14 @@ function syncPlay() {
 function useSource(kind) {
   source = kind; syncSourceBtns();
   if (kind === "demo") {
-    engine.startDemo(); setTrack("Демо-синтезатор", "встроенный трек Aura");
+    engine.startDemo(); setTrack("Демо-синтезатор", "спокойная пьеса Aura");
   } else if (kind === "mic") {
     setTrack("Микрофон", "визуализация без звука в колонках");
     engine.startMic().catch(function () { setTrack("Микрофон недоступен", "нет доступа"); });
   } else if (kind === "file") {
     document.getElementById("fileIn").click();
+  } else if (kind === "folder") {
+    document.getElementById("folderIn").click();
   } else if (kind === "radio") {
     engine.startRadio(curStation, 0, function (title) { setTrack(title, curStation.n); });
     setTrack("Подключение…", curStation.n);
@@ -658,6 +690,22 @@ document.getElementById("fileIn").addEventListener("change", function (e) {
   source = "file"; syncSourceBtns();
   engine.loadFile(f); setTrack(f.name, "ваш трек"); syncPlay();
 });
+document.getElementById("folderIn").addEventListener("change", function (e) {
+  var audio = Array.prototype.slice.call(e.target.files || [])
+    .filter(function (f) { return AUDIO_EXT.test(f.name); });
+  if (!audio.length) { setTrack("В папке нет аудиофайлов", "попробуйте другую папку"); return; }
+  audio.sort(function (a, b) {
+    return (a.webkitRelativePath || a.name).localeCompare(
+      b.webkitRelativePath || b.name, undefined, { numeric: true });
+  });
+  source = "folder"; syncSourceBtns();
+  engine.loadFolder(audio);
+  setTrack(audio[0].name, "1 из " + audio.length + " · папка"); syncPlay();
+});
+engine.onPlChange = function (file, index, total) {
+  setTrack(file.name, (index + 1) + " из " + total + " · папка");
+  syncPlay();
+};
 stationSel.addEventListener("change", function () {
   curStation = STATIONS.filter(function (s) { return s.id === stationSel.value; })[0] || STATIONS[0];
   lsSet("station", curStation.id);
